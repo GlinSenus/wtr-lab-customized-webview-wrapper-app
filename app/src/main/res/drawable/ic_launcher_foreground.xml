@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- This references your .jpg file and shrinks it with padding/margins so it won't get cut off -->
+    <item
+        android:drawable="@drawable/app_icon"
+        android:left="14dp"
+        android:right="14dp"
+        android:top="14dp"
+        android:bottom="14dp" />
+</layer-list>

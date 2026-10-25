@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>No Internet Connection</title>
+    <style>
+        * {
+            -webkit-tap-highlight-color: transparent;
+            -webkit-user-select: none; 
+            -moz-user-select: none;   
+            -ms-user-select: none;   
+            user-select: none;         
+        }
+        body {
+            background-color: #282b32;
+            color: #E0E0E0;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            height:100vh;
+            text-align: center;
+        }
+        .icon {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 24px;
+            border-radius: 24px;
+        }
+        h2 {
+            margin: 0 0 8px 0;
+            font-size: 22px;
+            font-weight: 600;
+        }
+        p {
+            color: #9E9E9E;
+            font-size: 14px;
+            margin: 0 0 24px 0;
+        }
+        .btn {
+            background-color: #9f948a;
+            color: #FFFFFF;
+            border: 1px solid #9f948a;
+            padding: 9px 21px;
+            font-size: 12px;
+            font-weight: 500;
+            border-radius: 18px;
+            cursor: pointer;
+            outline: none;
+            -webkit-tap-highlight-color: transparent;
+            transition: background-color 0.2s;
+        }
+        .btn:active {
+            background-color: #777777;
+        }
+        .content-wrapper {
+            transform: translateY(-60px);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="content-wrapper">
+        <img src="file:///android_res/drawable/app_icon.png" alt="App Icon" class="icon" onerror="this.style.display='none'">
+    
+        <h2>No Internet Connection</h2>
+        <p>Please check your network settings and try again.</p>
+    
+        <button class="btn" onclick="retryConnection()">Try Again</button>
+    </div>
+    <script>
+        function retryConnection() {
+            // Tells the Android app wrapper to reload the original URL
+            if (window.AndroidInterface) {
+                window.AndroidInterface.retry();
+            } else {
+                location.reload();
+            }
+        }
+    </script>
+</body>
+</html>
