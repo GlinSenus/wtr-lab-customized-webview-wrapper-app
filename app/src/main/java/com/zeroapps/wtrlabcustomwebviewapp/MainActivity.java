@@ -27,6 +27,18 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+import android.speech.tts.Voice;
+import android.webkit.JavascriptInterface;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
 
@@ -44,6 +56,11 @@ public class MainActivity extends Activity {
   private volatile boolean isShowingOfflinePage = false;
   private volatile String lastSuccessUrl = TARGET_URL;
   private volatile String retryUrl = TARGET_URL;
+
+  private TextToSpeech tts;
+  private volatile boolean ttsReady = false;
+  private final List<Runnable> ttsPending = new ArrayList<>();
+  private String ttsPolyfillJs = "";
 
   private static final Set<String> ALLOWED_HOSTS = new HashSet<>(
       Arrays.asList("wtr-lab.com", "accounts.google.com"));
@@ -126,6 +143,7 @@ public class MainActivity extends Activity {
     setContentView(R.layout.activity_main);
 
     webView = findViewById(R.id.webview);
+    setupTts();
 
     View container = findViewById(R.id.container);
 
@@ -177,9 +195,10 @@ public class MainActivity extends Activity {
       }
     }, "AndroidInterface");
 
+    webView.addJavascriptInterface(new TtsBridge(), "AndroidTTS");
+
     webView.setWebViewClient(new WebViewClient() {
 
-      
       @Override
       public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
 
@@ -241,10 +260,12 @@ public class MainActivity extends Activity {
           view.stopLoading();
           return;
         }
-
         if (isAllowedUrl(url)) {
           isShowingOfflinePage = false;
+          stopTts();
+          view.evaluateJavascript(ttsPolyfillJs, null);
         }
+
       }
 
       @Override
@@ -266,6 +287,7 @@ public class MainActivity extends Activity {
 
           view.setVisibility(View.VISIBLE);
           view.evaluateJavascript(AD_REMOVER_JS, null);
+          view.evaluateJavascript(ttsPolyfillJs, null);
         }
       }
 
@@ -331,11 +353,12 @@ public class MainActivity extends Activity {
 
     webView.setWebChromeClient(new WebChromeClient() {
       @Override
-      public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
+      public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture,
+          Message resultMsg) {
         return false;
       }
     });
-    
+
     if (isAllowedUrl(TARGET_URL) && isNetworkAvailable()) {
       webView.loadUrl(TARGET_URL);
     } else if (isAllowedUrl(TARGET_URL)) {
@@ -405,6 +428,220 @@ public class MainActivity extends Activity {
     }
 
     return false;
+  }
+
+  @Override
+  protected void onDestroy() {
+    if (tts != null) {
+      tts.stop();
+      tts.shutdown();
+    }
+    super.onDestroy();
+  }
+
+  private String readAsset(String path) {
+    try (InputStream in = getAssets().open(path);
+        ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+      byte[] buffer = new byte[4096];
+      int count;
+      while ((count = in.read(buffer)) != -1) {
+        out.write(buffer, 0, count);
+      }
+      return out.toString("UTF-8");
+    } catch (IOException e) {
+      return "";
+    }
+  }
+
+  private void setupTts() {
+    ttsPolyfillJs = readAsset("js/tts-polyfill.js");
+
+    tts = new TextToSpeech(this, status -> {
+      if (status != TextToSpeech.SUCCESS) {
+        return;
+      }
+
+      tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+        @Override
+        public void onStart(String uid) {
+          String[] p = uid.split("\\|");
+          if ("1".equals(p[2])) {
+            sendTtsEvent(p[0], "start", 0);
+          }
+        }
+
+        @Override
+        public void onDone(String uid) {
+          String[] p = uid.split("\\|");
+          if ("1".equals(p[3])) {
+            sendTtsEvent(p[0], "end", 0);
+          }
+        }
+
+        @Override
+        @Deprecated
+        public void onError(String uid) {
+          String[] p = uid.split("\\|");
+          sendTtsEvent(p[0], "error", 0);
+        }
+
+        @Override
+        public void onRangeStart(String uid, int start, int end, int frame) {
+          String[] p = uid.split("\\|");
+          sendTtsEvent(p[0], "boundary", Integer.parseInt(p[1]) + start);
+        }
+      });
+
+      ttsReady = true;
+      for (Runnable r : ttsPending) {
+        r.run();
+      }
+      ttsPending.clear();
+    });
+  }
+
+  private void sendTtsEvent(String id, String type, int charIndex) {
+    runOnUiThread(() -> {
+      if (webView != null) {
+        webView.evaluateJavascript(
+            "window.__ttsEvent&&window.__ttsEvent('" + id + "','" + type + "'," + charIndex + ")",
+            null);
+      }
+    });
+  }
+
+  private void stopTts() {
+    ttsPending.clear();
+    if (tts != null && ttsReady) {
+      tts.stop();
+    }
+  }
+
+  private static int findChunkEnd(String text, int pos, int max) {
+    int hardEnd = Math.min(pos + max, text.length());
+    if (hardEnd == text.length()) {
+      return hardEnd;
+    }
+    for (int i = hardEnd - 1; i > pos; i--) {
+      char c = text.charAt(i);
+      if (c == '.' || c == '!' || c == '?' || c == '\n') {
+        return i + 1;
+      }
+    }
+    for (int i = hardEnd - 1; i > pos; i--) {
+      if (text.charAt(i) == ' ') {
+        return i + 1;
+      }
+    }
+    return hardEnd;
+  }
+
+  private void applyVoice(String voiceName, String lang) {
+    if (voiceName != null && !voiceName.isEmpty()) {
+      Set<Voice> all = tts.getVoices();
+      if (all != null) {
+        for (Voice v : all) {
+          if (v.getName().equals(voiceName)) {
+            tts.setVoice(v);
+            return;
+          }
+        }
+      }
+    }
+    if (lang != null && !lang.isEmpty()) {
+      tts.setLanguage(Locale.forLanguageTag(lang));
+      return;
+    }
+    Voice def = tts.getDefaultVoice();
+    if (def != null) {
+      tts.setVoice(def);
+    }
+  }
+
+  private void speakNow(String id, String text, String voiceName, String lang, float rate,
+      float pitch, float volume) {
+    String body = text.replaceAll("\\s+$", "");
+
+    if (body.isEmpty()) {
+      sendTtsEvent(id, "start", 0);
+      sendTtsEvent(id, "end", 0);
+      return;
+    }
+
+    applyVoice(voiceName, lang);
+    tts.setSpeechRate(rate > 0 ? rate : 1f);
+    tts.setPitch(pitch > 0 ? pitch : 1f);
+
+    float safeVolume = Math.max(0f, Math.min(1f, volume));
+    int max = Math.min(TextToSpeech.getMaxSpeechInputLength() - 1, 1500);
+    int pos = 0;
+    boolean first = true;
+
+    while (pos < body.length()) {
+      int end = findChunkEnd(body, pos, max);
+      boolean last = end >= body.length();
+      String uid = id + "|" + pos + "|" + (first ? 1 : 0) + "|" + (last ? 1 : 0);
+
+      Bundle params = new Bundle();
+      params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, safeVolume);
+
+      tts.speak(body.substring(pos, end), TextToSpeech.QUEUE_ADD, params, uid);
+
+      first = false;
+      pos = end;
+    }
+  }
+
+  private class TtsBridge {
+
+    @JavascriptInterface
+    public String getVoices() {
+      JSONArray array = new JSONArray();
+
+      if (tts == null || !ttsReady) {
+        return array.toString();
+      }
+
+      Set<Voice> all = tts.getVoices();
+      Voice def = tts.getDefaultVoice();
+
+      if (all == null) {
+        return array.toString();
+      }
+
+      try {
+        for (Voice v : all) {
+          JSONObject o = new JSONObject();
+          o.put("name", v.getName());
+          o.put("lang", v.getLocale().toLanguageTag());
+          o.put("local", !v.isNetworkConnectionRequired());
+          o.put("def", def != null && v.getName().equals(def.getName()));
+          array.put(o);
+        }
+      } catch (JSONException e) {
+        return "[]";
+      }
+
+      return array.toString();
+    }
+
+    @JavascriptInterface
+    public void speak(String id, String text, String voiceName, String lang, float rate,
+        float pitch, float volume) {
+      runOnUiThread(() -> {
+        Runnable job = () -> speakNow(id, text, voiceName, lang, rate, pitch, volume);
+        if (ttsReady) {
+          job.run();
+        } else {
+          ttsPending.add(job);
+        }
+      });
+    }
+
+    @JavascriptInterface
+    public void stop() {
+      runOnUiThread(() -> stopTts());
+    }
   }
 
   private void loadOfflinePage(String failedUrl) {
